@@ -1,0 +1,20 @@
+{
+  "ignorePatterns": [
+    {
+      "pattern": "https://github.com/NVIDIA/spark-rapids/pull/*"
+    },
+    {
+      "pattern": "https://github.com/NVIDIA/spark-rapids/issues/*"
+    },
+    {
+      "pattern": "/docs/archives"
+    },
+    {
+      "pattern": "http://localhost*"
+    }
+  ],
+  "timeout": "15s",
+  "retryOn429": true,
+  "retryCount":30,
+  "aliveStatusCodes": [200, 403]
+} 
