@@ -53,6 +53,8 @@ trait Optimizer {
  */
 class CostBasedOptimizer extends Optimizer with Logging {
 
+//  private var numOfoper: Int = 0 // jgh test
+
   /**
    * Walk the plan and determine CPU and GPU costs for each operator and then make decisions
    * about whether operators should run on CPU or GPU.
@@ -197,6 +199,57 @@ class CostBasedOptimizer extends Optimizer with Logging {
       logCosts(plan, s"final operator, transitionFromGpuCost=$transitionCost",
         totalCpuCost, totalGpuCost)
     }
+
+    //  jgh start
+    // FineStream test
+    // filter, project, join is mapped on CPU, others on GPU
+//    if (plan.wrapped.getClass.getSimpleName.contains("Filter")) {
+//      optimizations.append(ModiAvoidTransition(plan))
+//      plan.costPreventsRunningOnGpu()
+//    }
+//
+//    if (plan.wrapped.getClass.getSimpleName.contains("Project")) {
+//      optimizations.append(ModiAvoidTransition(plan))
+//      plan.costPreventsRunningOnGpu()
+//    }
+//
+//    if (plan.wrapped.getClass.getSimpleName.contains("Join")) {
+//      optimizations.append(ModiAvoidTransition(plan))
+//      plan.costPreventsRunningOnGpu()
+//    }
+//
+//    if (plan.wrapped.getClass.getSimpleName.contains("Expand")) {
+//      optimizations.append(ModiAvoidTransition(plan))
+//      plan.costPreventsRunningOnGpu()
+//    }
+
+    // scalastyle:off println
+//    numOfoper += 1
+    // 6's filter test
+//    if (numOfoper == 4 || numOfoper == 15) {
+//      optimizations.append(ModiAvoidTransition(plan))
+//      plan.costPreventsRunningOnGpu()
+//    }
+
+    // dyop's query plan
+//    if (numOfoper == 4 || numOfoper == 15 || numOfoper == 4 || numOfoper == 5 || numOfoper == 6 ||
+//      numOfoper == 7 || numOfoper == 8 || numOfoper == 9 || numOfoper == 10 ||
+//      numOfoper == 12 || numOfoper == 15) {
+//      optimizations.append(ModiAvoidTransition(plan))
+//      plan.costPreventsRunningOnGpu()
+//    }
+
+//    if (plan.wrapped.getClass.getSimpleName == "HashAggregateExec") {
+//      numOfHashAgg += 1
+//      println(s"numOfHashAgg: ${numOfHashAgg} on recursivelyOptimize in ModiCostBasedOptimizer")
+//
+//      if (numOfHashAgg == 1) {
+//        println(s"move HashAggregate to CPU on recursivelyOptimize in ModiCostBasedOptimizer")
+//        optimizations.append(ModiAvoidTransition(plan))
+//        plan.costPreventsRunningOnGpu()
+//      }
+//    }
+    // scalastyle:on println
 
     if (totalGpuCost > totalCpuCost) {
       // we have reached a point where we have transitioned onto GPU for part of this

@@ -29,12 +29,13 @@ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStag
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
-import org.apache.spark.sql.execution.streaming.{StateStoreRestoreExec, StateStoreSaveExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, StructType}
 
+
+
 // *******************************************dStream******************************************
-class Vertex(val node: SparkPlanMeta[SparkPlan], val version: String) {
+class Vertex(val node: SparkPlanMeta[SparkPlan], val version: String, val order: Int = 0) {
   var distance: Double = Double.MaxValue
   val ancestor: ListBuffer[Map[Vertex, Double]] = ListBuffer.empty[Map[Vertex, Double]]
   var pi: Vertex = null
@@ -90,7 +91,7 @@ class ModiCostBasedOptimizer(conf: RapidsConf) extends ModiOptimizer with Loggin
 
   // jgh: originally fetched from spark.SparkPlan. but we don't know these initial value.
   // so, we set initial value to 150KB (as it says on the paper)
-  private val inflectionPointOfBatchSize: Double = 150000.0
+  private var inflectionPointOfBatchSize: Double = 150000.0
 
   // jgh: i think this value is number of dataset in Batch.
   private var sizeOfBatchedFileSource: Double = 0.0
@@ -103,22 +104,21 @@ class ModiCostBasedOptimizer(conf: RapidsConf) extends ModiOptimizer with Loggin
 
   private var currentBatchSizeOrigin: Double = 0
 
-//  private var numOfHashAgg: Int = 0
-//  private var numOfProject: Int = 0
-//  private var numOfFilter: Int = 0
-//  private var numOfExpand: Int = 0
-//  private var numOfJoin: Int = 0
-//  private var numOfShuffle: Int = 0
-//  private var numOfSort: Int = 0
+  private var orderOfHashAgg: Int = -1
+  private var orderOfProject: Int = -1
+  private var orderOfFilter: Int = -1
+  private var orderOfExpand: Int = -1
+  private var orderOfJoin: Int = -1
+  private var orderOfexchange: Int = -1
+  private var orderOfSort: Int = -1
 
-  private val startVertex: Vertex = new Vertex(null, "START")
+  private val startVertex: Vertex = new Vertex(null, "START", 0)
   private val sortedVertices: ListBuffer[Vertex] = ListBuffer.empty[Vertex]
 
   // to ensure the same instance that we used in DAG shortest path algorithm
   private val vertexMap: Map[(SparkPlanMeta[SparkPlan], String), Vertex] = Map()
   // Map to hold the other inputs of JOIN
   private val otherJoinInput: Map[SparkPlanMeta[SparkPlan], Vertex] = Map()
-
   //-----------------------------------------------------------------------
 
   def optimize(conf: RapidsConf, plan: SparkPlanMeta[SparkPlan]): Seq[Optimization] = {
@@ -135,6 +135,11 @@ class ModiCostBasedOptimizer(conf: RapidsConf) extends ModiOptimizer with Loggin
     sizeOfBatchedFileSource = numDSOfMB // for LMStream
     currentBatchSizeOrigin = currentMBSize
     currentBatchSize = currentBatchSizeOrigin / numPartitions
+    inflectionPointOfBatchSize = SparkPlan.getInflectionPoint match {
+      case value if value < 1.0 => 150000.0
+      case value => value
+//      case _ => 150000.0
+    }
     // jgh end
 
     // jgh
@@ -161,9 +166,9 @@ class ModiCostBasedOptimizer(conf: RapidsConf) extends ModiOptimizer with Loggin
   }
 
   // *******************************************dStream******************************************
-  def getOrCreateVertex(plan: SparkPlanMeta[SparkPlan], version: String): Vertex = {
+  def getOrCreateVertex(plan: SparkPlanMeta[SparkPlan], version: String, order: Int): Vertex = {
     if (!vertexMap.contains((plan, version))) {
-      vertexMap((plan, version)) = new Vertex(plan, version)
+      vertexMap((plan, version)) = new Vertex(plan, version, order)
     }
     vertexMap((plan, version))
   }
@@ -183,50 +188,148 @@ class ModiCostBasedOptimizer(conf: RapidsConf) extends ModiOptimizer with Loggin
     }
 
     def calculateInputDim(inputSize: Double): Int = {
-      (inputSize / 72.0).toInt match {
-        case a if a < 1000 => 0
-        case b if b < 10000 => 1
-        case c if c < 100000 => 2
-        case _ => 3
+      inputSize match {
+//        case a if a < 1024 => 0     // 1KB
+//        case b if b < 5120 => 1     // 5KB
+//        case c if c < 10240 => 2    // 10KB
+//        case d if d < 51200 => 3    // 50KB
+//        case e if e < 102400 => 4   // 100KB
+//        case f if f < 512000 => 5   // 500KB
+//        case g if g < 1048576 => 6  // 1MB
+//        case h if h < 5242880 => 7  // 5MB
+//        case i if i < 10485760 => 8 // 10MB
+//        case _ => 9                 // 10MB ~
+        case a if a < 1024 => 0    // 1KB
+        case b if b < 5 * 1024 => 1    // 5KB
+        case c if c < 10 * 1024 => 2    // 10KB
+        case d if d < 20 * 1024 => 3    // 20KB
+        case e if e < 30 * 1024 => 4    // 30KB
+        case f if f < 40 * 1024 => 5    // 40KB
+        case g if g < 50 * 1024 => 6    // 50KB
+        case h if h < 60 * 1024 => 7    // 60KB
+        case i if i < 70 * 1024 => 8    // 70KB
+        case j if j < 80 * 1024 => 9    // 80KB
+        case k if k < 90 * 1024 => 10    // 90KB
+        case l if l < 100 * 1024 => 11    // 100KB
+        case m if m < 200 * 1024 => 12    // 200KB
+        case n if n < 300 * 1024 => 13    // 300KB
+        case o if o < 400 * 1024 => 14    // 400KB
+        case p if p < 500 * 1024 => 15    // 500KB
+        case q if q < 600 * 1024 => 16    // 600KB
+        case r if r < 700 * 1024 => 17    // 700KB
+        case s if s < 800 * 1024 => 18    // 800KB
+        case t if t < 900 * 1024 => 19    // 900KB
+        case u if u < 1024 * 1024 => 20    // 1MB
+        case v if v < 2 * 1024 * 1024 => 21    // 2MB
+        case w if w < 3 * 1024 * 1024 => 22    // 3MB
+        case x if x < 4 * 1024 * 1024 => 23    // 4MB
+        case y if y < 5 * 1024 * 1024 => 24    // 5MB
+        case z if z < 6 * 1024 * 1024 => 25    // 6MB
+        case aa if aa < 7 * 1024 * 1024 => 26    // 7MB
+        case bb if bb < 8 * 1024 * 1024 => 27    // 8MB
+        case cc if cc < 9 * 1024 * 1024 => 28    // 9MB
+        case _ => 29    // 9MB ~
+
       }
     }
 
-    def getCost(plan: SparkPlan, typeDim: Int, inputDim: Int): Double = plan match {
-      case _: ExpandExec => SQLExecution.expandEMATable(typeDim)(inputDim)
-      case _: FilterExec => SQLExecution.filterEMATable(typeDim)(inputDim)
-      case _: ProjectExec => SQLExecution.projectEMATable(typeDim)(inputDim)
-      case _: BroadcastHashJoinExec => SQLExecution.hashJoinEMATable(typeDim)(inputDim)
-      case _: SortMergeJoinExec => SQLExecution.hashJoinEMATable(typeDim)(inputDim)
-      case _: HashAggregateExec => SQLExecution.hashAggregateEMATable(typeDim)(inputDim)
-      case _: ShuffleExchangeExec => SQLExecution.shuffleEMATable(typeDim)(inputDim)
-      case _: SortExec => SQLExecution.sortEMATable(typeDim)(inputDim)
-      case _: StateStoreRestoreExec => SQLExecution.stateRestoreEMATable(typeDim)(inputDim)
-      case _: StateStoreSaveExec => SQLExecution.stateSaveEMATable(typeDim)(inputDim)
-      case _ => 1.0
+    def getCost(plan: SparkPlan, typeDim: Int, inputDim: Int, order: Int): (Double, Double) = {
+      val zeroDim = typeDim + order * 4
+      plan.getClass.getSimpleName match {
+        case filter if filter.contains("Filter") =>
+          (SQLExecution.filterEMATable(zeroDim)(inputDim),
+            SQLExecution.estimateRowsFilterTable(zeroDim)(inputDim))
+        case expand if expand.contains("Expand") =>
+          (SQLExecution.expandEMATable(zeroDim)(inputDim),
+            SQLExecution.estimateRowsExpandTable(zeroDim)(inputDim))
+        case project if project.contains("Project") =>
+          (SQLExecution.projectEMATable(zeroDim)(inputDim),
+            SQLExecution.estimateRowsProjectTable(zeroDim)(inputDim))
+        case join if join.contains("Join") =>
+          (SQLExecution.hashJoinEMATable(zeroDim)(inputDim),
+            SQLExecution.estimateRowsHashJoinTable(zeroDim)(inputDim))
+        case aggregate if aggregate.contains("Aggregate") =>
+          (SQLExecution.hashAggregateEMATable(zeroDim)(inputDim),
+            SQLExecution.estimateRowsHashAggregateTable(zeroDim)(inputDim))
+        case exchange if exchange.contains("Exchange") =>
+          (SQLExecution.exchangeEMATable(zeroDim)(inputDim),
+            SQLExecution.estimateRowsExchangeTable(zeroDim)(inputDim))
+        case sort if sort.contains("Sort") =>
+          (SQLExecution.sortEMATable(zeroDim)(inputDim),
+            SQLExecution.estimateRowsSortTable(zeroDim)(inputDim))
+        case stateSave if stateSave.contains("StateStoreSave") =>
+          (SQLExecution.stateSaveEMATable(zeroDim)(inputDim),
+            SQLExecution.estimateRowsStateSaveTable(zeroDim)(inputDim))
+        case stateRestore if stateRestore.contains("StateStoreRestore") =>
+          (SQLExecution.stateRestoreEMATable(zeroDim)(inputDim),
+            SQLExecution.estimateRowsStateRestoreTable(zeroDim)(inputDim))
+        case _ => (1.0, currentBatchSizeOrigin / 78)
+      }
     }
 
     def transferCost(inputSize: Double, typeDim: Int): Double = typeDim match {
-      case 1 => inputSize * 0.00000001
-      case 2 => inputSize * 0.00000001
+      case 1 => inputSize * 0.0000078
+      case 2 => inputSize * 0.0000078
       case _ => 0
     }
 
     if (plan.childPlans.isEmpty) {
-      plan.inputSize = currentBatchSizeOrigin
-      plan.outputSize = dStreamEstimateOutputSize(plan, currentBatchSizeOrigin)
+//      plan.inputSize = currentBatchSizeOrigin
+//      plan.outputSize = dStreamEstimateOutputSize(plan, currentBatchSizeOrigin)
+
       // TODO: need to consider the case where the plan is on GPU
       // select CPU or GPU via data size.
-      // for now, we assume that the plan is on CPU
-      startVertex.ancestor += Map(getOrCreateVertex(plan, "CPU") -> 0.0)
-      val firstVertex = getOrCreateVertex(plan, "CPU")
-      sortedVertices.append(firstVertex)
-      return firstVertex :: Nil
+      if (currentBatchSizeOrigin > 1024) { // 50KB
+        startVertex.ancestor += Map(getOrCreateVertex(plan, "GPU", 0) -> 0.0)
+        val firstVertex = getOrCreateVertex(plan, "GPU", 0)
+        sortedVertices.append(firstVertex)
+        return firstVertex :: Nil
+      } else {
+        startVertex.ancestor += Map(getOrCreateVertex(plan, "CPU", 0) -> 0.0)
+        val firstVertex = getOrCreateVertex(plan, "CPU", 0)
+        sortedVertices.append(firstVertex)
+        return firstVertex :: Nil
+      }
     }
 
+    val childList = plan.childPlans.flatMap(topologicalSort)
+
+    val currOrder = plan.wrapped.getClass.getSimpleName match {
+      case filter if filter.contains("Filter") => {
+        orderOfFilter += 1
+        orderOfFilter
+      }
+      case project if project.contains("Project") => {
+        orderOfProject += 1
+        orderOfProject
+      }
+      case aggregate if aggregate.contains("Aggregate") => {
+        orderOfHashAgg += 1
+        orderOfHashAgg
+      }
+      case sort if sort.contains("Sort") => {
+        orderOfSort += 1
+        orderOfSort
+      }
+      case join if join.contains("Join") => {
+        orderOfJoin += 1
+        orderOfJoin
+      }
+      case expand if expand.contains("Expand") => {
+        orderOfExpand += 1
+        orderOfExpand
+      }
+      case exchange if exchange.contains("exchange") => {
+        orderOfexchange += 1
+        orderOfexchange
+      }
+      case _ => 0
+    }
     val currentVertices = if (onlyCPUPlans.contains(plan.wrapped.getClass.getSimpleName)) {
-      List(getOrCreateVertex(plan, "CPU"))
+      List(getOrCreateVertex(plan, "CPU", currOrder))
     } else {
-      List(getOrCreateVertex(plan, "CPU"), getOrCreateVertex(plan, "GPU"))
+      List(getOrCreateVertex(plan, "CPU", currOrder),
+        getOrCreateVertex(plan, "GPU", currOrder))
     }
 
 //    plan.childPlans.foreach { childPlan =>
@@ -243,19 +346,28 @@ class ModiCostBasedOptimizer(conf: RapidsConf) extends ModiOptimizer with Loggin
 //    }
 //
 //    currentVertices
-    val childList = plan.childPlans.flatMap(topologicalSort)
+
 //    println(s"[${plan.wrapped.getClass.getSimpleName}]'s childList: ${childList}}")
 
-    plan.inputSize = plan.childPlans.map(_.outputSize).sum
-    plan.outputSize = dStreamEstimateOutputSize(plan, plan.inputSize)
+//    plan.inputSize = plan.childPlans.map(_.outputSize).sum
+//    plan.outputSize = dStreamEstimateOutputSize(plan, plan.inputSize)
 
     for (childVertex <- childList) {
       for (currentVertex <- currentVertices) {
         val typeDim = calculateTypeDim(childVertex.version, currentVertex.version)
-        val inputDim = calculateInputDim(plan.inputSize)
-        val cost = getCost(plan.wrapped, typeDim, inputDim) +
-          transferCost(currentVertex.node.inputSize, typeDim)
-        childVertex.ancestor += Map(currentVertex -> cost)
+        val inputDim = calculateInputDim(currentBatchSizeOrigin)
+//        val cost = getCost(plan.wrapped, typeDim, inputDim, currOrder) +
+//          transferCost(currentVertex.node.inputSize, typeDim)
+        val (cost, rowNum) = getCost(plan.wrapped, typeDim, inputDim, currOrder)
+        val transCost = transferCost(rowNum, typeDim)
+        val totalCost = cost + transCost
+//        println(s"[${childVertex.order}, ${childVertex.version}]" +
+//          s"${childVertex.node.wrapped.getClass.getSimpleName} ---> " +
+//          s"${totalCost}(${cost}, ${transCost}) & (${typeDim + (currOrder * 4)}, " +
+//          s"${inputDim}) ---> " +
+//          s"[${currentVertex.order}, ${currentVertex.version}]" +
+//          s"${currentVertex.node.wrapped.getClass.getSimpleName}")
+        childVertex.ancestor += Map(currentVertex -> totalCost)
       }
     }
 
@@ -274,29 +386,29 @@ class ModiCostBasedOptimizer(conf: RapidsConf) extends ModiOptimizer with Loggin
   //    }
   //  }
 
-  private def dStreamEstimateOutputSize(plan: SparkPlanMeta[_],
-                                        currentBatchSize: Double): Double = {
-    plan.wrapped match {
-      case _: ExpandExec => // Stateless operation (Unary)
-        currentBatchSize
-      case _: FileSourceScanExec => // Stateless operation
-        currentBatchSize
-      case _: FilterExec => // Stateless operation
-        currentBatchSize
-      case _: ProjectExec => // Stateless operation
-        currentBatchSize
-      case _: BroadcastHashJoinExec => // Stateful operation
-        currentBatchSize * 2
-      case _: HashAggregateExec => // Stateful operation
-        currentBatchSize * 2
-      case _: ShuffleExchangeExec => // Stateful operation
-        currentBatchSize * 2
-      case _: SortExec => // Stateful operation
-        currentBatchSize * 2
-      case _ =>
-        currentBatchSize
-    }
-  }
+//  private def dStreamEstimateOutputSize(plan: SparkPlanMeta[_],
+//                                        currentBatchSize: Double): Double = {
+//    plan.wrapped match {
+//      case _: ExpandExec => // Stateless operation (Unary)
+//        currentBatchSize
+//      case _: FileSourceScanExec => // Stateless operation
+//        currentBatchSize
+//      case _: FilterExec => // Stateless operation
+//        currentBatchSize
+//      case _: ProjectExec => // Stateless operation
+//        currentBatchSize
+//      case _: BroadcastHashJoinExec => // Stateful operation
+//        currentBatchSize * 2
+//      case _: HashAggregateExec => // Stateful operation
+//        currentBatchSize * 2
+//      case _: ShuffleExchangeExec => // Stateful operation
+//        currentBatchSize * 2
+//      case _: SortExec => // Stateful operation
+//        currentBatchSize * 2
+//      case _ =>
+//        currentBatchSize
+//    }
+//  }
 
   /**
    * this is the implementation of dStream optimizer
@@ -310,50 +422,56 @@ class ModiCostBasedOptimizer(conf: RapidsConf) extends ModiOptimizer with Loggin
     // topological sort
     // scalastyle:off println
     println(s"@@@@@@@@@ START DSTREAM OPTIMIZER @@@@@@@@@")
+    val createGraphStartTime = System.nanoTime()
     println(s"currentBatchSizeOrigin: ${currentBatchSizeOrigin}")
     // Usage
     startVertex.distance = 0.0
 //    val sortedVerties = topologicalSort(plan)
     topologicalSort(plan)
     sortedVertices.prepend(startVertex)
+    val createGraphEndTime = System.nanoTime()
 
-
-    for ((i, idx) <- sortedVertices.zipWithIndex) {
-      if (idx == 0) {
-        println(s"startVertex, ${i.version}, ${i.distance}")
-      } else {
-        println(s"(${i})${i.node.wrapped.getClass.getSimpleName}, ${i.version}," +
-          s" ${i.distance} || ${i.node.inputSize} || ${i.node.outputSize}}")
-      }
-      for (j <- i.ancestor){
-        j.foreach { case (v, w) =>
-          println(s"ancestor: (${v})${v.node.wrapped.getClass.getSimpleName}[${v.version}]: ${w}")
-        }
-      }
-    }
+//    for ((i, idx) <- sortedVertices.zipWithIndex) {
+//      if (idx == 0) {
+//        println(s"startVertex, ${i.version}, ${i.distance}")
+//      } else {
+////        println(s"(${i})${i.node.wrapped.getClass.getSimpleName}, ${i.version}," +
+////          s" ${i.distance} || ${i.node.inputSize} || ${i.node.outputSize}}")
+//        println(s"[${i.order}]${i.node.wrapped.getClass.getSimpleName}, ${i.version}," +
+//          s" ${i.distance}")
+//
+//      }
+//      for (j <- i.ancestor){
+//        j.foreach { case (v, w) =>
+//          println(s"ancestor: (${v})${v.node.wrapped.getClass.getSimpleName}[${v.version}]: ${w}")
+//        }
+//      }
+//    }
 
     println(s"========= CALCULATE SHORTEST PATH =========")
+    val calculateStartTime = System.nanoTime()
     for (u <- sortedVertices) {
-      println(s"-----------------------------------------")
-      u.node match {
-        case null => println(s"u : [${u.version}]startVertex")
-        case _ => println(s"u : [${u.version}]${u.node.wrapped.getClass.getSimpleName}")
-      }
+//      println(s"-----------------------------------------")
+//      u.node match {
+//        case null => println(s"u : [${u.version}]startVertex")
+//        case _ => println(s"u : [${u.version}]${u.node.wrapped.getClass.getSimpleName}")
+//      }
 
+      // directed (u -> v)
       for (vMap <- u.ancestor) {
         vMap.foreach { case (v, w) =>
-          v.node match {
-            case null => println(s"v : [${v.version}]${v.node.wrapped.getClass.getSimpleName}," +
-              s" w: ${w}")
-            case _ => println(s"v : [${v.version}]${v.node.wrapped.getClass.getSimpleName}," +
-              s" w: ${w}")
-          }
-          println(s"v.distance: ${v.distance} VS cost: ${u.distance + w}(u.dist=${u.distance}" +
-            s" + w=${w})")
+//          v.node match {
+//            case null => println(s"v : [${v.version}]${v.node.wrapped.getClass.getSimpleName}," +
+//              s" w: ${w}")
+//            case _ => println(s"v : [${v.version}]${v.node.wrapped.getClass.getSimpleName}," +
+//              s" w: ${w}")
+//          }
+//          println(s"v.distance: ${v.distance} VS cost: ${u.distance + w}(u.dist=${u.distance}" +
+//            s" + w=${w})")
 
           // If v is JOIN, then we need to check whether the other input is already in the map
           if (v.node.wrapped.getClass.getSimpleName.contains("Join")) {
-            if (!otherJoinInput.contains(v.node)) {
+            if (otherJoinInput.contains(v.node)) {
               val currJoinInputVertex = otherJoinInput(v.node)
               if (currJoinInputVertex.distance > u.distance + w) {
                 otherJoinInput -= v.node
@@ -367,28 +485,60 @@ class ModiCostBasedOptimizer(conf: RapidsConf) extends ModiOptimizer with Loggin
           if (v.distance > u.distance + w) {
             v.distance = u.distance + w
             v.pi = u
-            v.node match {
-              case null => println(s"[${v.version}]startVertex " +
-                s"distance is updated to ${v.distance}")
-              case _ => println(s"[${v.version}]${v.node.wrapped.getClass.getSimpleName} " +
-                s"distance is updated to ${v.distance}")
-            }
+//            v.node match {
+//              case null => println(s"[${v.version}]startVertex " +
+//                s"distance is updated to ${v.distance}")
+//              case _ => println(s"[${v.version}]${v.node.wrapped.getClass.getSimpleName} " +
+//                s"distance is updated to ${v.distance}")
+//            }
           }
         }
       }
     }
+    val calculateEndTime = System.nanoTime()
 
     println(s"========= APPLY SHORTEST PATH =========")
+    val applyStartTime = System.nanoTime()
     applyShortestPath(sortedVertices.last, optimizations)
     if (otherJoinInput.nonEmpty){
       applyShortestPath(otherJoinInput.head._2, optimizations)
     }
+    val applyEndTime = System.nanoTime()
 
     println(s"========= PRINT SHORTEST PATH =========")
-    println(s"sortedVertices.last: ${sortedVertices.last}")
-    showPiChain(sortedVertices.last)
+//    println(s"sortedVertices.last: ${sortedVertices.last}")
+//    showPiChain(sortedVertices.last)
 
     println(s"@@@@@@@@@ END DSTREAM OPTIMIZER @@@@@@@@@")
+    println(s"@@@@@@@@@ DSTREAM OPTIMIZER SUMMARY @@@@@@@@@")
+    val createTime = createGraphEndTime - createGraphStartTime
+    val calculateTime = calculateEndTime - calculateStartTime
+    val applyTime = applyEndTime - applyStartTime
+    val totalTime = createTime + calculateTime + applyTime
+    println(s"createGraphTime: ${(createGraphEndTime - createGraphStartTime) / 1000} us")
+    println(s"calculateTime: ${(calculateEndTime - calculateStartTime) / 1000} us")
+    println(s"applyTime: ${(applyEndTime - applyStartTime) / 1000} us")
+    println(s"totalTime: ${totalTime / 1000} us")
+    println(s"@@@@@@@@@ END DSTREAM OPTIMIZER SUMMARY @@@@@@@@@")
+
+//    println(s"!!!!!FilterEMATable!!!!!")
+//    SQLExecution.filterEMATable.foreach { row =>
+//      println(row.mkString(" , "))
+//    }
+//    println(s"!!!!!estimateRowsFilterTable!!!!!")
+//    SQLExecution.estimateRowsFilterTable.foreach { row =>
+//      println(row.mkString(" , "))
+//    }
+//    println(s"!!!!!hashAggregateEMATable!!!!!")
+//    SQLExecution.hashAggregateEMATable.foreach { row =>
+//      println(row.mkString(" , "))
+//    }
+//    println(s"!!!!!estimateRowsHashAggregateTable!!!!!")
+//    SQLExecution.estimateRowsHashAggregateTable.foreach { row =>
+//      println(row.mkString(" , "))
+//    }
+//    println(s"!!!!!show Result!!!!!")
+//    showPiChain(sortedVertices.last)
     // scalastyle: on println
   }
   def applyShortestPath(vertex: Vertex, optimizations: ListBuffer[Optimization]): Unit = {
@@ -396,13 +546,13 @@ class ModiCostBasedOptimizer(conf: RapidsConf) extends ModiOptimizer with Loggin
     while (currentVertex != null) {
       currentVertex.node match {
         case null =>
-        case node =>
-          if (currentVertex.version == "CPU") {
-            println(s"${node.wrapped.getClass.getSimpleName} is running on CPU")
+        case node => {
+          if (currentVertex.version == "CPU" || currentBatchSizeOrigin < 600000) {
+            //            println(s"${node.wrapped.getClass.getSimpleName} is running on CPU")
             optimizations.append(ModiAvoidTransition(node))
             node.costPreventsRunningOnGpu()
           }
-          if (currentVertex.ancestor.nonEmpty && currentVertex.ancestor.head.nonEmpty){
+          if (currentVertex.ancestor.nonEmpty && currentVertex.ancestor.head.nonEmpty) {
             if (currentVertex.ancestor.head.keys.head.node.wrapped.getClass
               .getSimpleName.contains("Join")) {
               if (otherJoinInput.contains(node)) {
@@ -410,26 +560,27 @@ class ModiCostBasedOptimizer(conf: RapidsConf) extends ModiOptimizer with Loggin
               }
             }
           }
+        }
       }
+
       currentVertex = currentVertex.pi
     }
   }
 
-  def showPiChain(vertex: Vertex): Unit = {
-    var currentVertex: Vertex = vertex
-    var idx = 0
-    while (currentVertex != null) {
-      currentVertex.node match {
-        case null => println(s"[${idx}]Vertex: startVertex, Version: ${currentVertex.version}")
-        case _ => println(s"[${idx}]Vertex: ${currentVertex.node.wrapped.getClass.getSimpleName}"+
-          s", Version: ${currentVertex.version}")
-      }
-
-      currentVertex = currentVertex.pi
-      idx += 1
-    }
-  }
-
+//  def showPiChain(vertex: Vertex): Unit = {
+//    var currentVertex: Vertex = vertex
+//    var idx = 0
+//    while (currentVertex != null) {
+//      currentVertex.node match {
+//        case null => println(s"[${idx}]Vertex: startVertex, Version: ${currentVertex.version}")
+//        case _ => println(s"[${idx}]Vertex: ${currentVertex.node.wrapped.getClass.getSimpleName}"+
+//          s", Version: ${currentVertex.version}")
+//      }
+//
+//      currentVertex = currentVertex.pi
+//      idx += 1
+//    }
+//  }
 
   // *********************************************************************************************
 

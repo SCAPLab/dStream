@@ -578,8 +578,8 @@ abstract class SparkPlanMeta[INPUT <: SparkPlan](plan: INPUT,
 
   // jgh start
   // dstream
-  var inputSize: Double = 0.0
-  var outputSize: Double = 0.0
+//  var inputSize: Double = 0.0
+//  var outputSize: Double = 0.0
   // jgh end
 
   def tagForExplain(): Unit = {
